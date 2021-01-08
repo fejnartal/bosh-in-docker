@@ -1,0 +1,85 @@
+FROM governmentpaas/curl-ssl AS get-boshcli
+ARG BOSH_CLI_VERSION=6.4.1
+RUN curl -L --output bosh https://github.com/cloudfoundry/bosh-cli/releases/download/v${BOSH_CLI_VERSION}/bosh-cli-${BOSH_CLI_VERSION}-linux-amd64
+RUN chmod +x bosh
+
+FROM alpine AS cloned-cf-deployment
+RUN apk --update add git 
+RUN git clone https://github.com/cloudfoundry/cf-deployment
+
+FROM alpine AS cloned-bosh-deployment
+RUN apk --update add git 
+RUN git clone https://github.com/cloudfoundry/bosh-deployment
+
+FROM byrnedo/alpine-curl:0.1.8 AS get-zookeeper
+RUN curl -L --output zookeeper.yml https://raw.githubusercontent.com/cppforlife/zookeeper-release/master/manifests/zookeeper.yml
+
+FROM ubuntu:bionic as dind-ubuntu
+# https://github.com/docker/docker/blob/master/project/PACKAGERS.md#runtime-dependencies
+
+RUN set -eux; \
+	apt-get update && apt-get install -y --no-install-recommends \
+		btrfs-progs \
+		e2fsprogs \
+		iptables \
+		openssl \
+		uidmap \
+		xfsprogs \
+		xz-utils \
+# pigz: https://github.com/moby/moby/pull/35697 (faster gzip implementation)
+		pigz \
+		wget \
+		ca-certificates \
+	; \
+# only install zfs if it's available for the current architecture
+# https://git.alpinelinux.org/cgit/aports/tree/main/zfs/APKBUILD?h=3.6-stable#n9 ("all !armhf !ppc64le" as of 2017-11-01)
+# "apk info XYZ" exits with a zero exit code but no output when the package exists but not for this arch
+	if zfs="$(apk info --no-cache --quiet zfs)" && [ -n "$zfs" ]; then \
+		apk add --no-cache zfs; \
+	fi
+
+# TODO aufs-tools
+
+# set up subuid/subgid so that "--userns-remap=default" works out-of-the-box
+RUN set -eux; \
+	addgroup --system dockremap; \
+	useradd --system -g dockremap dockremap; \
+	echo 'dockremap:165536:65536' >> /etc/subuid; \
+	echo 'dockremap:165536:65536' >> /etc/subgid
+
+# https://github.com/docker/docker/tree/master/hack/dind
+ENV DIND_COMMIT ed89041433a031cafc0a0f19cfe573c31688d377
+
+RUN set -eux; \
+	wget -O /usr/local/bin/dind "https://raw.githubusercontent.com/docker/docker/${DIND_COMMIT}/hack/dind"; \
+	chmod +x /usr/local/bin/dind
+
+VOLUME /var/lib/docker
+EXPOSE 2375 2376
+
+CMD []
+
+FROM dind-ubuntu
+RUN apt-get update && apt-get install ruby bash -y --no-install-recommends
+COPY --from=get-boshcli bosh /usr/local/bin/bosh
+COPY --from=cloned-bosh-deployment bosh-deployment/ /bosh-deployment
+COPY --from=cloned-cf-deployment cf-deployment/ /cf-deployment
+COPY --from=get-zookeeper zookeeper.yml /zookeeper.yml
+
+ADD create-env.sh /create-env.sh
+RUN chmod +x /create-env.sh
+
+RUN apt-get install -y --no-install-recommends \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg-agent \
+    software-properties-common \
+	git-core
+RUN curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+RUN apt-key fingerprint 0EBFCD88
+RUN add-apt-repository \
+   "deb [arch=amd64] https://download.docker.com/linux/ubuntu \
+   $(lsb_release -cs) \
+   stable"
+RUN apt-get install docker-ce docker-ce-cli containerd.io -y --no-install-recommends

@@ -1,0 +1,17 @@
+{
+	"name": "Bosh from Docker Compose",
+	"dockerComposeFile": "docker-compose.yml",
+	"service": "bosh-cli",
+	"workspaceFolder": "/workspace",
+
+	"remoteEnv": {
+		"LOCAL_WORKSPACE_FOLDER": "${localWorkspaceFolder}"
+	},
+	
+	"settings": { 
+		"terminal.integrated.shell.linux": "/bin/bash"
+	},
+
+	"extensions": [
+	]
+}
